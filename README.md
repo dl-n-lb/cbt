@@ -12,4 +12,4 @@ And for all subsequent uses:
 ```console
 ./cbt
 ```
-The tool will recompile itself if changed (TODO)
+The tool will recompile itself if changed 
