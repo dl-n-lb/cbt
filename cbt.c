@@ -4,21 +4,8 @@
 #include <sys/stat.h>
 
 #define CBT_IMPLEMENTATION
+#define REBUILD_UNWIND
 #include "cbt.h"
-
-#if 0 // NOTE: IDEAL USAGE OF BUILD
-int main() {
-    build b = create_build;
-    file file;
-    FOR_FILES_IN_DIR(file, "./", {
-            if (IS_SOURCE_FILE(file)) build_add_source(&b, file);
-        });
-    build_set_flags(&b, ...);
-
-    BuildStatus status = build_run(b);
-    return status;
-}
-#endif
 
 #if 0 // NOTE: IDEAL USAGE OF PROJECT
 int main() {
@@ -36,13 +23,11 @@ int main() {
 #endif
 
 int main(int argc, char **argv) {
-  run_rebuild();
+  enable_self_rebuild();
 
-  build b = create_build();
-  set_sources(&b, "test/main.c", "test/example.c");
-  set_flags(&b, "-o", "test/main", "-O2");
+  bld_t b = bld_create(str_list_create("test/main.c", "test/example.c"), "test/main");
 
-  run_build(b);
+  bld_run(b, "-O2", "-funsafe-math-optimizations");
 
   alloc_free();
   return EXIT_SUCCESS;

@@ -1,22 +1,30 @@
 #ifndef CBT_H_
 #define CBT_H_
 
-// TODO: REDIRECT FORKED STDOUT
-// TODO: LOGGING SYSTEM (+ERRNO)
-// TODO: ASYNC COMMAND EXECUTION
+// TODO: PANIC AND CRASH REVERTS BUILD
 // TODO: VARIADIC JOIN FOR LISTS
-// TODO: RECOMPILE SELF - WIP (cbt.c)
-// TODO: ONLY RECOMPILE WHEN FILE CHANGED
+// TODO: PANIC UNWINDS BUILD STACK TO REVERT CHANGES
+// TODO: IT WOULD BE COOL IF I DIDNT NEED TO SPECIFY DEPENDENCIES AND THE BUILD
+// TOOL JUST FINDS THEM ALL FOR ME
+//       OBV. STILL NEED TO SPECIFY LIB LOCATIONS
+// TODO: ASYNC COMMAND EXECUTION
 // TODO: EXIT GRACEFULLY WHEN ENCOUNTERING ERROR (REVERT)
 
-#include <assert.h>
 #include <stdarg.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#include <assert.h>
+#include <errno.h>
+#include <string.h>
+
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
+
+#define UNIMPLEMENTED assert(0 && "unimplemented");
 
 #define CC "gcc"
 
@@ -27,7 +35,7 @@
 typedef struct {
   void *data;
   int end;
-} page;
+} page_t;
 
 static struct {
   void *data;
@@ -37,6 +45,8 @@ static struct {
 void *alloc(size_t n_bytes);
 void free_page(size_t idx);
 void alloc_free();
+
+// LIST
 
 #define LIST(name, type)                                                       \
   typedef struct {                                                             \
@@ -51,31 +61,66 @@ void alloc_free();
 typedef const char *str_t;
 LIST(str_list, str_t);
 
-typedef struct {
-  str_list_t sources;
-  str_list_t flags;
-} build;
-
 str_t str_list_concat(str_list_t, str_t);
 
 str_list_t str_list_create_impl(int ignore, ...);
 #define str_list_create(...) str_list_create_impl(0, __VA_ARGS__, NULL)
 
-void exec_cmd(str_list_t);
+// LOG
 
-build create_build(void);
+void flog(FILE *, str_t, str_t, va_list);
+void info(str_t, ...); //  all logs print msg to stderr
+void warn(str_t, ...);
+void error(str_t, ...); // NOTE: should error be different to warn?
+void panic(str_t, ...); // TODO: needs to error, rollback build, exit
 
-void set_flags_impl(build *, ...);
-#define set_flags(b, ...) set_flags_impl(b, __VA_ARGS__, NULL);
+// CMD
 
-void set_sources_impl(build *, ...);
-#define set_sources(b, ...) set_sources_impl(b, __VA_ARGS__, NULL);
+int exec_cmd(str_list_t);
+int exec_cmd_fd(str_list_t, int, int);
 
-void run_build(build);
+#define mkdirs(dirs) exec_cmd(str_list_create("mkdir", dirs, "-p"));
+#define cc(...) exec_cmd(str_list_create(CC, __VA_ARGS__));
 
-void run_rebuild_impl(int, char **, const char *);
+bool file_exists(str_t f);
 
-#define run_rebuild() run_rebuild_impl(argc, argv, __FILE__)
+// BLD COMMANDS (SINGLE CALL TO CC)
+
+#define CACHE_DIRECTORY "./.cache" // TODO: if .cache doesnt exist, create it
+
+typedef struct {
+  str_t target;
+  str_list_t srcs;
+} bld_t;
+
+#define BLD_STACK_SIZE 1024
+
+typedef struct {
+  bld_t *stack;
+  size_t count;
+} bld_stack_t;
+
+static bld_stack_t bld_stack;
+
+void add_to_stack(bld_t);
+
+bld_t pop_stack(void);
+
+void unwind_stack(void);
+
+bld_t bld_create(str_list_t srcs, str_t tgt);
+
+void bld_set_flags_impl(bld_t *, ...);
+#define bld_set_flags(b, ...) bld_set_flags_impl(b, __VA_ARGS__, NULL)
+
+// va args for flags (TODO: should this be a str_list_t?)
+void bld_run_impl(bld_t, ...);
+#define bld_run(b, ...) bld_run_impl(b, __VA_ARGS__, NULL)
+
+bool need_to_rebuild(str_t, str_t);
+
+void self_rebuild_impl(int, char **, str_t);
+#define enable_self_rebuild() self_rebuild_impl(argc, argv, __FILE__)
 
 #endif // CBT_H_
 #ifdef CBT_IMPLEMENTATION
@@ -138,13 +183,6 @@ str_list_t str_list_create_impl(int ignore, ...) {
   return res;
 }
 
-build create_build(void) {
-  return (build){
-      .sources = str_list_init(4),
-      .flags = str_list_init(4),
-  };
-}
-
 str_t str_list_concat(str_list_t xs, str_t sep) {
   if (xs.count == 0)
     return "";
@@ -171,62 +209,154 @@ str_t str_list_concat(str_list_t xs, str_t sep) {
   return res;
 }
 
-void set_sources_impl(build *b, ...) {
+// LOG
+
+void flog(FILE *f, str_t ty, str_t fmt, va_list args) {
+  fprintf(f, "[%s] ", ty);
+  fprintf(f, fmt, args);
+  fprintf(f, "\n");
+}
+
+void info(str_t fmt, ...) {
   va_list args;
-  va_start(args, b);
-  for (char *next = va_arg(args, char *); next != NULL;
-       next = va_arg(args, char *)) {
-    str_list_append(&b->sources, next);
-  }
+  va_start(args, fmt);
+  flog(stderr, "info", fmt, args);
   va_end(args);
 }
 
-void set_flags_impl(build *b, ...) {
+void warn(str_t fmt, ...) {
   va_list args;
-  va_start(args, b);
-  for (char *next = va_arg(args, char *); next != NULL;
-       next = va_arg(args, char *)) {
-    str_list_append(&b->flags, next);
-  }
+  va_start(args, fmt);
+  flog(stderr, "warn", fmt, args);
   va_end(args);
 }
 
-void exec_cmd(str_list_t cmd) {
-  printf("[RUNNING COMMAND] %s\n", str_list_concat(cmd, " "));
+void error(str_t fmt, ...) {
+  va_list args;
+  va_start(args, fmt);
+  flog(stderr, "error", fmt, args);
+  va_end(args);
+}
+
+// CMD
+
+int exec_cmd(str_list_t cmd) {
+  exec_cmd_fd(cmd, STDIN_FILENO, STDOUT_FILENO);
+}
+
+bool file_exists(str_t f) {
+  struct stat buffer;
+  return stat(f, &buffer) == 0;
+}
+
+int exec_cmd_fd(str_list_t cmd, int fdin, int fdout) {
+  info(str_list_concat(cmd, " "));
   str_list_append(&cmd, NULL);
   int pid = fork();
   if (pid < 0)
     assert(0 && "Failed to create fork ;-;");
   if (pid == 0) {
-    int c = execvp(cmd.data[0], (char *const *)cmd.data);
+    if (fdin != STDIN_FILENO && fdout != STDOUT_FILENO) {
+      close(fdin);
+      dup2(fdout, STDOUT_FILENO);
+      close(fdout);
+    }
+    if (execvp(cmd.data[0], (char *const *)cmd.data) < 0)
+      assert(0 && "Failed to exec command");
   }
-  int t;
-  waitpid(pid, &t, 0);
+  int status;
+  waitpid(pid, &status, 0);
+  return status;
 }
 
-void run_build(build b) {
-  // argv[0] must be the name of the command (i hate this)
-  // execvp doesnt force this, so the caller must do it
-  // this is v ugly code tho >.<
+// BLD
+
+void add_to_stack(bld_t b) {
+  if (bld_stack.stack == NULL) {
+    bld_stack.stack = malloc(sizeof(bld_t) * BLD_STACK_SIZE);
+    bld_stack.count = 0;
+  }
+  bld_stack.stack[bld_stack.count++] = b;
+}
+
+bld_t pop_stack(void) { return bld_stack.stack[--bld_stack.count]; }
+
+void unwind_stack(void){UNIMPLEMENTED}
+
+bld_t bld_create(str_list_t srcs, str_t target) {
+  return (bld_t){
+      .srcs = srcs,
+      .target = target,
+  };
+}
+
+// TODO:
+// move old files into cache directory
+// if build fails move old files back (using build stack)
+void bld_run_impl(bld_t b, ...) {
+  if (file_exists(b.target)) {
+    mkdirs(CACHE_DIRECTORY);
+    str_t fp = str_list_concat(str_list_create(CACHE_DIRECTORY, b.target), "/");
+    // dirname
+    int fds[2];
+    pipe(fds);
+    exec_cmd_fd(str_list_create("dirname", fp), fds[0], fds[1]);
+    char fp_dir[256];
+    close(fds[1]);
+    int readlen;
+    while((readlen = read(fds[0], fp_dir, sizeof(fp_dir))) != 0) {
+      fp_dir[readlen] = '\0';
+    }
+    fp_dir[strlen(fp_dir) - 1] = '\0'; // get rid of \n
+    printf("path: %s %d\n", fp_dir);
+    exec_cmd(str_list_create("mkdir", "-p", fp_dir));
+    exec_cmd(str_list_create("mv", b.target, fp));
+  }
+  va_list args;
+  va_start(args, b);
+  str_list_t flags = str_list_init(1);
+  for (str_t flag = va_arg(args, str_t); flag != NULL;
+       flag = va_arg(args, str_t)) {
+    str_list_append(&flags, flag);
+  }
+  va_end(args);
+
   str_list_t cmd = str_list_init(1);
   str_list_append(&cmd, CC);
-  str_list_t res = str_list_join(cmd, str_list_join(b.sources, b.flags));
+  str_list_append(&cmd, "-o");
+  str_list_append(&cmd, b.target);
+  str_list_t cmd_f = str_list_join(cmd, str_list_join(b.srcs, flags));
 
-  exec_cmd(res);
+  int res = exec_cmd(cmd_f);
 }
 
-void run_rebuild_impl(int argc, char **argv, const char *file) {
-  struct stat sf, sb;
-  stat(file, &sf);
-  stat(argv[0], &sb);
-  if (sf.st_mtime > sb.st_mtime) {
-    printf("Rebuilding cbt...\n");
-    exec_cmd(str_list_create("gcc", "-o", "cbt", "cbt.c"));
+bool need_to_rebuild(str_t src, str_t tgt) {
+  struct stat ss, st;
+  stat(src, &ss);
+  stat(tgt, &st);
+  return ss.st_mtime > st.st_mtime;
+}
+
+void self_rebuild_impl(int argc, char **argv, str_t file) {
+  if (need_to_rebuild(file, argv[0])) {
+    info("Rebuilding cbt...");
+    char *new_filename = malloc(strlen(argv[0]) + 4);
+    sprintf(new_filename, "%s.new", argv[0]);
+    int x = exec_cmd(str_list_create("gcc", "-o", new_filename, file));
+    if (x != 0) {
+      exec_cmd(str_list_create("rm", "-f", new_filename));
+      errno = x;
+      error("rebuild failed"); // NOTE: should be fine not to panic here, there
+                               // shouldn't be a stack to unwind
+      exit(x);
+    }
+    exec_cmd(str_list_create("mv", "cbt.new", "cbt"));
+    info("Succesfully rebuilt");
     str_list_t argv_l = str_list_init(argc);
-    argv_l.data = (const char **)argv;
+    argv_l.data = (str_t *)argv;
     argv_l.count = argc;
-    exec_cmd(argv_l);
-    exit(EXIT_SUCCESS);
+    int res = exec_cmd(argv_l);
+    exit(res);
   }
 }
 
