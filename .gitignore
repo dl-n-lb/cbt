@@ -1,0 +1,10 @@
+.DS_Store
+.idea
+*.log
+tmp/
+
+cbt
+.cache
+test
+cbt.new-cbt.gcda
+cbt.new-cbt.gcno
