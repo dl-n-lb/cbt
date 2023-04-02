@@ -39,27 +39,27 @@ typedef struct {
 
 static struct {
   void *data;
-  int cur_idx;
+  size_t cur_idx;
 } allocator;
 
 void *alloc(size_t n_bytes);
 void free_page(size_t idx);
-void alloc_free();
+void alloc_free(void);
 
 // LIST
 
 #define LIST(name, type)                                                       \
   typedef struct {                                                             \
     type *data;                                                                \
-    int count;                                                                 \
-    int capacity;                                                              \
+    size_t count;                                                              \
+    size_t capacity;                                                           \
   } name##_t;                                                                  \
-  name##_t name##_init(int);                                                   \
+  name##_t name##_init(size_t);                                                \
   void name##_append(name##_t *, type);                                        \
   name##_t name##_join(name##_t, name##_t);
 
 typedef const char *str_t;
-LIST(str_list, str_t);
+LIST(str_list, str_t)
 
 str_t str_list_concat(str_list_t, str_t);
 
@@ -73,6 +73,7 @@ void info(str_t, ...); //  all logs print msg to stderr
 void warn(str_t, ...);
 void error(str_t, ...); // NOTE: should error be different to warn?
 void panic(str_t, ...); // TODO: needs to error, rollback build, exit
+void sys_panic(void);
 
 // CMD
 
@@ -139,7 +140,7 @@ void *alloc(size_t n_bytes) {
 void alloc_free() { free(allocator.data); }
 
 #define LIST_IMPL(name, type)                                                  \
-  name##_t name##_init(int initial_cap) {                                      \
+  name##_t name##_init(size_t initial_cap) {                                   \
     return (name##_t){                                                         \
         .data = alloc(initial_cap * sizeof(type)),                             \
         .count = 0,                                                            \
@@ -151,7 +152,7 @@ void alloc_free() { free(allocator.data); }
       xs->data[xs->count++] = elem;                                            \
       return;                                                                  \
     }                                                                          \
-    int nc = xs->capacity * 2;                                                 \
+    size_t nc = xs->capacity * 2;                                              \
     typeof(xs->data) new_data = alloc(nc * sizeof(xs->data[0]));               \
     memcpy(new_data, xs->data, xs->count * sizeof(xs->data[0]));               \
     xs->data = new_data;                                                       \
@@ -160,16 +161,16 @@ void alloc_free() { free(allocator.data); }
   }                                                                            \
   name##_t name##_join(name##_t a, name##_t b) {                               \
     name##_t res = name##_init(a.count + b.count);                             \
-    for (int i = 0; i < a.count; ++i) {                                        \
+    for (size_t i = 0; i < a.count; ++i) {                                     \
       name##_append(&res, a.data[i]);                                          \
     }                                                                          \
-    for (int i = 0; i < b.count; ++i) {                                        \
+    for (size_t i = 0; i < b.count; ++i) {                                     \
       name##_append(&res, b.data[i]);                                          \
     }                                                                          \
     return res;                                                                \
   }
 
-LIST_IMPL(str_list, str_t);
+LIST_IMPL(str_list, str_t)
 
 str_list_t str_list_create_impl(int ignore, ...) {
   str_list_t res = str_list_init(4);
@@ -238,10 +239,27 @@ void error(str_t fmt, ...) {
   va_end(args);
 }
 
+void panic(str_t fmt, ...) {
+  va_list args;
+  va_start(args, fmt);
+  flog(stderr, "panic", fmt, args);
+  va_end(args);
+  // TODO: unwind build stack
+  exit(errno);
+}
+
+void sys_panic() {
+  panic("sys error, potentially caused by: %s", strerror(errno));
+}
+
+#define CHECK(ret)                                                             \
+  if (ret < 0)                                                                 \
+  sys_panic()
+
 // CMD
 
 int exec_cmd(str_list_t cmd) {
-  exec_cmd_fd(cmd, STDIN_FILENO, STDOUT_FILENO);
+  return exec_cmd_fd(cmd, STDIN_FILENO, STDOUT_FILENO);
 }
 
 bool file_exists(str_t f) {
@@ -257,12 +275,12 @@ int exec_cmd_fd(str_list_t cmd, int fdin, int fdout) {
     assert(0 && "Failed to create fork ;-;");
   if (pid == 0) {
     if (fdin != STDIN_FILENO && fdout != STDOUT_FILENO) {
-      close(fdin);
-      dup2(fdout, STDOUT_FILENO);
-      close(fdout);
+      CHECK(close(fdin));
+      CHECK(dup2(fdout, STDOUT_FILENO));
+      CHECK(close(fdout));
     }
     if (execvp(cmd.data[0], (char *const *)cmd.data) < 0)
-      assert(0 && "Failed to exec command");
+      panic("Failed to exec command: %s", strerror(errno));
   }
   int status;
   waitpid(pid, &status, 0);
@@ -303,12 +321,11 @@ void bld_run_impl(bld_t b, ...) {
     exec_cmd_fd(str_list_create("dirname", fp), fds[0], fds[1]);
     char fp_dir[256];
     close(fds[1]);
-    int readlen;
-    while((readlen = read(fds[0], fp_dir, sizeof(fp_dir))) != 0) {
+    ssize_t readlen;
+    while ((readlen = read(fds[0], fp_dir, sizeof(fp_dir))) != 0) {
       fp_dir[readlen] = '\0';
     }
     fp_dir[strlen(fp_dir) - 1] = '\0'; // get rid of \n
-    printf("path: %s %d\n", fp_dir);
     exec_cmd(str_list_create("mkdir", "-p", fp_dir));
     exec_cmd(str_list_create("mv", b.target, fp));
   }
@@ -328,6 +345,7 @@ void bld_run_impl(bld_t b, ...) {
   str_list_t cmd_f = str_list_join(cmd, str_list_join(b.srcs, flags));
 
   int res = exec_cmd(cmd_f);
+  (void)res;
 }
 
 bool need_to_rebuild(str_t src, str_t tgt) {
@@ -337,12 +355,21 @@ bool need_to_rebuild(str_t src, str_t tgt) {
   return ss.st_mtime > st.st_mtime;
 }
 
+#define SELF_REBUILD_WARNING_FLAGS                                             \
+  "-Werror", "-pedantic", "-Wall", "-Wextra", "-Wconversion", "-Wshadow",      \
+      "-Wpointer-arith", "-Wstrict-prototypes", "-Wunreachable-code",          \
+      "-Wwrite-strings", "-Wbad-function-cast", "-Wcast-align",                \
+      "-Wswitch-default", "-Winline", "-Wundef", "-Wfloat-equal",              \
+      "-fno-common", "-fstrict-aliasing", "-fanalyzer", "--coverage",          \
+      "-fsanitize=address"
+
 void self_rebuild_impl(int argc, char **argv, str_t file) {
   if (need_to_rebuild(file, argv[0])) {
     info("Rebuilding cbt...");
-    char *new_filename = malloc(strlen(argv[0]) + 4);
-    sprintf(new_filename, "%s.new", argv[0]);
-    int x = exec_cmd(str_list_create("gcc", "-o", new_filename, file));
+    char new_filename[256];
+    CHECK(sprintf(new_filename, "%s.new", argv[0]));
+    int x = exec_cmd(str_list_create("gcc", "-o", new_filename, file,
+                                     SELF_REBUILD_WARNING_FLAGS));
     if (x != 0) {
       exec_cmd(str_list_create("rm", "-f", new_filename));
       errno = x;
@@ -352,9 +379,9 @@ void self_rebuild_impl(int argc, char **argv, str_t file) {
     }
     exec_cmd(str_list_create("mv", "cbt.new", "cbt"));
     info("Succesfully rebuilt");
-    str_list_t argv_l = str_list_init(argc);
+    str_list_t argv_l = str_list_init((size_t)argc);
     argv_l.data = (str_t *)argv;
-    argv_l.count = argc;
+    argv_l.count = (size_t)argc;
     int res = exec_cmd(argv_l);
     exit(res);
   }
