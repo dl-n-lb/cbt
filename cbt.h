@@ -207,6 +207,7 @@ str_t str_list_concat(str_list_t xs, str_t sep) {
       idx += strlen(sep);
     }
   }
+  res[res_len-1] = '\0';
   return res;
 }
 
@@ -372,7 +373,6 @@ void self_rebuild_impl(int argc, char **argv, str_t file) {
                                      SELF_REBUILD_WARNING_FLAGS));
     if (x != 0) {
       exec_cmd(str_list_create("rm", "-f", new_filename));
-      errno = x;
       error("rebuild failed"); // NOTE: should be fine not to panic here, there
                                // shouldn't be a stack to unwind
       exit(x);
