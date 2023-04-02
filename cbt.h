@@ -207,7 +207,7 @@ str_t str_list_concat(str_list_t xs, str_t sep) {
       idx += strlen(sep);
     }
   }
-  res[res_len-1] = '\0';
+  res[res_len - 1] = '\0';
   return res;
 }
 
@@ -356,13 +356,18 @@ bool need_to_rebuild(str_t src, str_t tgt) {
   return ss.st_mtime > st.st_mtime;
 }
 
+#ifdef CBT_SELF_REBUILD_DEBUG_MODE
 #define SELF_REBUILD_WARNING_FLAGS                                             \
   "-Werror", "-pedantic", "-Wall", "-Wextra", "-Wconversion", "-Wshadow",      \
       "-Wpointer-arith", "-Wstrict-prototypes", "-Wunreachable-code",          \
       "-Wwrite-strings", "-Wbad-function-cast", "-Wcast-align",                \
       "-Wswitch-default", "-Winline", "-Wundef", "-Wfloat-equal",              \
       "-fno-common", "-fstrict-aliasing", "-fanalyzer", "--coverage",          \
-      "-fsanitize=address"
+      "-fsanitize=address", "-O0"
+#else
+#define SELF_REBUILD_WARNING_FLAGS                                             \
+  "-O3", "-Werror", "-pedantic", "-Wall", "-Wextra", "-Wconversion", "-Wshadow"
+#endif
 
 void self_rebuild_impl(int argc, char **argv, str_t file) {
   if (need_to_rebuild(file, argv[0])) {

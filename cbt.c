@@ -4,6 +4,7 @@
 #include <sys/stat.h>
 
 #define CBT_IMPLEMENTATION
+#define CBT_SELF_REBUILD_DEBUG_MODE
 #define REBUILD_UNWIND
 #include "cbt.h"
 
