@@ -246,6 +246,7 @@ void panic(str_t fmt, ...) {
   flog(stderr, "panic", fmt, args);
   va_end(args);
   // TODO: unwind build stack
+  unwind_stack();
   exit(errno);
 }
 
@@ -288,6 +289,20 @@ int exec_cmd_fd(str_list_t cmd, int fdin, int fdout) {
   return status;
 }
 
+// returns the length of the substring of the file which contains the directory
+static int get_dir_name(str_t file) {
+  int fds[2];
+  CHECK(pipe(fds));
+  exec_cmd_fd(str_list_create("dirname", file), fds[0], fds[1]);
+  close(fds[1]);
+  ssize_t readlen;
+  char fp_dir[256];
+  while ((readlen = read(fds[0], fp_dir, sizeof(fp_dir))) != 0) {
+    fp_dir[readlen] = '\0';
+  }
+  return (int)strlen(fp_dir) - 1;
+}
+
 // BLD
 
 void add_to_stack(bld_t b) {
@@ -300,7 +315,14 @@ void add_to_stack(bld_t b) {
 
 bld_t pop_stack(void) { return bld_stack.stack[--bld_stack.count]; }
 
-void unwind_stack(void){UNIMPLEMENTED}
+void unwind_stack(void) {
+  while (bld_stack.count > 0) {
+    bld_t b = pop_stack();
+    str_t fp = str_list_concat(str_list_create(CACHE_DIRECTORY, b.target), "/");
+    exec_cmd(str_list_create("mv", fp, b.target));
+  }
+  exec_cmd(str_list_create("rm", "-r", CACHE_DIRECTORY));
+}
 
 bld_t bld_create(str_list_t srcs, str_t target) {
   return (bld_t){
@@ -314,21 +336,17 @@ bld_t bld_create(str_list_t srcs, str_t target) {
 // if build fails move old files back (using build stack)
 void bld_run_impl(bld_t b, ...) {
   if (file_exists(b.target)) {
+    add_to_stack(b);
     mkdirs(CACHE_DIRECTORY);
     str_t fp = str_list_concat(str_list_create(CACHE_DIRECTORY, b.target), "/");
     // dirname
-    int fds[2];
-    pipe(fds);
-    exec_cmd_fd(str_list_create("dirname", fp), fds[0], fds[1]);
-    char fp_dir[256];
-    close(fds[1]);
-    ssize_t readlen;
-    while ((readlen = read(fds[0], fp_dir, sizeof(fp_dir))) != 0) {
-      fp_dir[readlen] = '\0';
-    }
-    fp_dir[strlen(fp_dir) - 1] = '\0'; // get rid of \n
+    int end_idx = get_dir_name(fp);
+    char *fp_dir = malloc(strlen(fp) * sizeof(fp));
+    strcpy(fp_dir, fp);
+    fp_dir[end_idx] = '\0';
     exec_cmd(str_list_create("mkdir", "-p", fp_dir));
     exec_cmd(str_list_create("mv", b.target, fp));
+    free(fp_dir);
   }
   va_list args;
   va_start(args, b);
@@ -346,7 +364,7 @@ void bld_run_impl(bld_t b, ...) {
   str_list_t cmd_f = str_list_join(cmd, str_list_join(b.srcs, flags));
 
   int res = exec_cmd(cmd_f);
-  (void)res;
+  if (res != 0) panic("failed to build file >.<");
 }
 
 bool need_to_rebuild(str_t src, str_t tgt) {
