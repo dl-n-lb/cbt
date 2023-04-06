@@ -1,14 +1,12 @@
 #ifndef CBT_H_
 #define CBT_H_
 
-// TODO: PANIC AND CRASH REVERTS BUILD
+// TODO: ONLY REBUILD WHAT IS NECESSARY
 // TODO: VARIADIC JOIN FOR LISTS
-// TODO: PANIC UNWINDS BUILD STACK TO REVERT CHANGES
 // TODO: IT WOULD BE COOL IF I DIDNT NEED TO SPECIFY DEPENDENCIES AND THE BUILD
 // TOOL JUST FINDS THEM ALL FOR ME
 //       OBV. STILL NEED TO SPECIFY LIB LOCATIONS
 // TODO: ASYNC COMMAND EXECUTION
-// TODO: EXIT GRACEFULLY WHEN ENCOUNTERING ERROR (REVERT)
 
 #include <stdarg.h>
 #include <stdbool.h>
@@ -215,7 +213,7 @@ str_t str_list_concat(str_list_t xs, str_t sep) {
 
 void flog(FILE *f, str_t ty, str_t fmt, va_list args) {
   fprintf(f, "[%s] ", ty);
-  fprintf(f, fmt, args);
+  vfprintf(f, fmt, args);
   fprintf(f, "\n");
 }
 
@@ -336,6 +334,16 @@ bld_t bld_create(str_list_t srcs, str_t target) {
 // if build fails move old files back (using build stack)
 void bld_run_impl(bld_t b, ...) {
   if (file_exists(b.target)) {
+    // if source modified more recently than target, don't rebuild
+    bool need_to_build = false;
+    for (size_t i = 0; i < b.srcs.count; ++i) {
+      need_to_build = need_to_build || need_to_rebuild(b.srcs.data[i], b.target);
+    }
+    if (!need_to_build) {
+      info("skipping %s", b.target);
+      return;
+    }
+
     add_to_stack(b);
     mkdirs(CACHE_DIRECTORY);
     str_t fp = str_list_concat(str_list_create(CACHE_DIRECTORY, b.target), "/");
