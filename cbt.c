@@ -26,7 +26,7 @@ int main() {
 int main(int argc, char **argv) {
   enable_self_rebuild();
 
-  bld_t b = bld_create(str_list_create("test/main.c", "test/example.c"), "test/main");
+  bld_t b = bld_create("test/main", str_list_create("test/main.c", "test/example.c"));
 
   bld_run(b, "-O2", "-funsafe-math-optimizations");
 

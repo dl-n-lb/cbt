@@ -1,7 +1,6 @@
 #ifndef CBT_H_
 #define CBT_H_
 
-// TODO: ONLY REBUILD WHAT IS NECESSARY
 // TODO: VARIADIC JOIN FOR LISTS
 // TODO: IT WOULD BE COOL IF I DIDNT NEED TO SPECIFY DEPENDENCIES AND THE BUILD
 // TOOL JUST FINDS THEM ALL FOR ME
@@ -20,11 +19,12 @@
 
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #define UNIMPLEMENTED assert(0 && "unimplemented");
 
-#define CC "gcc"
+#define CC "clang"
 
 // ALLOCATOR
 
@@ -54,7 +54,8 @@ void alloc_free(void);
   } name##_t;                                                                  \
   name##_t name##_init(size_t);                                                \
   void name##_append(name##_t *, type);                                        \
-  name##_t name##_join(name##_t, name##_t);
+  name##_t name##_join(name##_t, name##_t);                                    \
+  name##_t name##_join_all(name##_t, ...);
 
 typedef const char *str_t;
 LIST(str_list, str_t)
@@ -107,7 +108,9 @@ bld_t pop_stack(void);
 
 void unwind_stack(void);
 
-bld_t bld_create(str_list_t srcs, str_t tgt);
+bld_t bld_create(str_t tgt, str_list_t srcs);
+
+#define bld_new(tgt, ...) bld_create((tgt), str_list_create(__VA_ARGS__))
 
 void bld_set_flags_impl(bld_t *, ...);
 #define bld_set_flags(b, ...) bld_set_flags_impl(b, __VA_ARGS__, NULL)
@@ -135,7 +138,7 @@ void *alloc(size_t n_bytes) {
   return (void *)idx;
 }
 
-void alloc_free() { free(allocator.data); }
+void alloc_free(void) { free(allocator.data); }
 
 #define LIST_IMPL(name, type)                                                  \
   name##_t name##_init(size_t initial_cap) {                                   \
@@ -151,7 +154,7 @@ void alloc_free() { free(allocator.data); }
       return;                                                                  \
     }                                                                          \
     size_t nc = xs->capacity * 2;                                              \
-    typeof(xs->data) new_data = alloc(nc * sizeof(xs->data[0]));               \
+    type *new_data = alloc(nc * sizeof(xs->data[0]));                         \
     memcpy(new_data, xs->data, xs->count * sizeof(xs->data[0]));               \
     xs->data = new_data;                                                       \
     xs->capacity = nc;                                                         \
@@ -166,6 +169,13 @@ void alloc_free() { free(allocator.data); }
       name##_append(&res, b.data[i]);                                          \
     }                                                                          \
     return res;                                                                \
+  }                                                                            \
+  name##_t name##_join_all(name##_t a, ...) {                                  \
+    UNIMPLEMENTED                                                              \
+    va_list args;                                                              \
+    va_start(args, a);                                                         \
+    va_end(args);                                                              \
+    return name##_init(0);                                                     \
   }
 
 LIST_IMPL(str_list, str_t)
@@ -248,7 +258,7 @@ void panic(str_t fmt, ...) {
   exit(errno);
 }
 
-void sys_panic() {
+void sys_panic(void) {
   panic("sys error, potentially caused by: %s", strerror(errno));
 }
 
@@ -322,7 +332,7 @@ void unwind_stack(void) {
   exec_cmd(str_list_create("rm", "-r", CACHE_DIRECTORY));
 }
 
-bld_t bld_create(str_list_t srcs, str_t target) {
+bld_t bld_create(str_t target, str_list_t srcs) {
   return (bld_t){
       .srcs = srcs,
       .target = target,
@@ -337,7 +347,8 @@ void bld_run_impl(bld_t b, ...) {
     // if source modified more recently than target, don't rebuild
     bool need_to_build = false;
     for (size_t i = 0; i < b.srcs.count; ++i) {
-      need_to_build = need_to_build || need_to_rebuild(b.srcs.data[i], b.target);
+      need_to_build =
+          need_to_build || need_to_rebuild(b.srcs.data[i], b.target);
     }
     if (!need_to_build) {
       info("skipping %s", b.target);
@@ -372,7 +383,8 @@ void bld_run_impl(bld_t b, ...) {
   str_list_t cmd_f = str_list_join(cmd, str_list_join(b.srcs, flags));
 
   int res = exec_cmd(cmd_f);
-  if (res != 0) panic("failed to build file >.<");
+  if (res != 0)
+    panic("failed to build file >.<");
 }
 
 bool need_to_rebuild(str_t src, str_t tgt) {
@@ -388,11 +400,12 @@ bool need_to_rebuild(str_t src, str_t tgt) {
       "-Wpointer-arith", "-Wstrict-prototypes", "-Wunreachable-code",          \
       "-Wwrite-strings", "-Wbad-function-cast", "-Wcast-align",                \
       "-Wswitch-default", "-Winline", "-Wundef", "-Wfloat-equal",              \
-      "-fno-common", "-fstrict-aliasing", "-fanalyzer", "--coverage",          \
-      "-fsanitize=address", "-O0"
+      "-fno-common", "-fstrict-aliasing", "-fsanitize=address", "-O0",         \
+      "-std=c99"
 #else
 #define SELF_REBUILD_WARNING_FLAGS                                             \
-  "-O3", "-Werror", "-pedantic", "-Wall", "-Wextra", "-Wconversion", "-Wshadow"
+  "-O3", "-Werror", "-pedantic", "-Wall", "-Wextra", "-Wconversion",           \
+      "-Wshadow", "-std=c99"
 #endif
 
 void self_rebuild_impl(int argc, char **argv, str_t file) {
@@ -400,7 +413,7 @@ void self_rebuild_impl(int argc, char **argv, str_t file) {
     info("Rebuilding cbt...");
     char new_filename[256];
     CHECK(sprintf(new_filename, "%s.new", argv[0]));
-    int x = exec_cmd(str_list_create("gcc", "-o", new_filename, file,
+    int x = exec_cmd(str_list_create(CC, "-o", new_filename, file,
                                      SELF_REBUILD_WARNING_FLAGS));
     if (x != 0) {
       exec_cmd(str_list_create("rm", "-f", new_filename));
